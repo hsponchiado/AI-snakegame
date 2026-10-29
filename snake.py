@@ -1,12 +1,12 @@
 import os
 import random
+from collections import deque
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
-CELLS = 20
+CELLS = 20  # default board size (cells per side)
 TILE = 35
-SIZE = CELLS * TILE
 
 # Relative actions: the agent says "keep going / turn" instead of "go north".
 # This gives 3 choices instead of 4, and none of them is an illegal U-turn.
@@ -30,20 +30,22 @@ def turn_left(d):
 class SnakeGame:
     """Snake rules only. No keyboard, no clock. Drawing happens only if render=True."""
 
-    def __init__(self, render=False, max_steps_without_food=100):
+    def __init__(self, render=False, max_steps_without_food=100, cells=CELLS):
+        self.cells = cells
         # Episode is truncated after this many moves without eating (None = no limit).
         self.max_steps_without_food = max_steps_without_food
         self.window = None
         if render:
             pygame.init()
-            self.window = pygame.display.set_mode((SIZE, SIZE))
+            self.window = pygame.display.set_mode((cells * TILE, cells * TILE))
             pygame.display.set_caption("AI Trained Snake Game")
             self.font = pygame.font.Font(None, 40)
         self.reset()
 
     def reset(self):
         # snake is a list of (col, row) cells, head first
-        self.snake = [(10, 10), (9, 10), (8, 10)]
+        m = self.cells // 2
+        self.snake = [(m, m), (m - 1, m), (m - 2, m)]
         self.direction = (1, 0)
         self.score = 0
         self.steps_since_food = 0
@@ -54,17 +56,36 @@ class SnakeGame:
 
     def _new_apple(self):
         taken = set(self.snake)
-        free = [(c, r) for c in range(CELLS) for r in range(CELLS) if (c, r) not in taken]
+        free = [(c, r) for c in range(self.cells) for r in range(self.cells) if (c, r) not in taken]
         return random.choice(free) if free else None
 
     def _hits(self, cell):
         """Would the head die by entering this cell on the next move?"""
         c, r = cell
-        if not (0 <= c < CELLS and 0 <= r < CELLS):
+        if not (0 <= c < self.cells and 0 <= r < self.cells):
             return True
         if cell == self.apple:
             return cell in self.snake  # eating: tail stays (apple is never on the snake anyway)
         return cell in self.snake[:-1]  # normal move: the tail cell gets vacated, so it's safe
+
+    def _free_space(self, cell):
+        """Fraction of the empty board the head could still reach after moving into `cell`.
+
+        Flood fill (breadth-first search) from `cell` through empty cells. A low value
+        means the move leads into a pocket, even if that pocket is many moves deep.
+        """
+        if self._hits(cell):
+            return 0.0
+        # Body after the move: the tail stays only if we eat.
+        blocked = set(self.snake if cell == self.apple else self.snake[:-1])
+        seen, queue = {cell}, deque([cell])
+        while queue:
+            c, r = queue.popleft()
+            for n in ((c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)):
+                if n not in seen and n not in blocked and 0 <= n[0] < self.cells and 0 <= n[1] < self.cells:
+                    seen.add(n)
+                    queue.append(n)
+        return len(seen) / (self.cells * self.cells - len(blocked))
 
     def step(self, action):
         """Apply one relative action. Returns (state, reward, terminated, truncated).
@@ -101,7 +122,7 @@ class SnakeGame:
         return self.get_state(), MOVE_REWARD, False, truncated
 
     def get_state(self):
-        """11 numbers (0 or 1) describing what the snake 'sees'."""
+        """14 numbers describing what the snake 'sees': 11 flags (0 or 1) + 3 free-space fractions."""
         hx, hy = self.snake[0]
         d = self.direction
         ahead = lambda dd: (hx + dd[0], hy + dd[1])
@@ -116,16 +137,20 @@ class SnakeGame:
             # where the food is compared to the head
             ax < hx, ax > hx, ay < hy, ay > hy,
         ]
-        return [int(f) for f in features]
+        # reachable space after going straight / right / left (0.0 to 1.0)
+        space = [self._free_space(ahead(dd)) for dd in (d, turn_right(d), turn_left(d))]
+        return [int(f) for f in features] + space
 
-    def render(self):
+    def render(self, plan=None, q=None):
+        """plan: cells the AI expects to visit next. q: Q-values for (straight, right, left)."""
         if self.window is None:
             return
         w = self.window
+        size = self.cells * TILE
         w.fill("#6CBB3C")
-        for x in range(0, SIZE, TILE):
-            pygame.draw.line(w, "#5AA832", (x, 0), (x, SIZE))
-            pygame.draw.line(w, "#5AA832", (0, x), (SIZE, x))
+        for x in range(0, size, TILE):
+            pygame.draw.line(w, "#5AA832", (x, 0), (x, size))
+            pygame.draw.line(w, "#5AA832", (0, x), (size, x))
         if self.apple:
             pygame.draw.rect(w, "red", (self.apple[0] * TILE, self.apple[1] * TILE, TILE, TILE))
         for col, row in self.snake:
@@ -133,18 +158,37 @@ class SnakeGame:
         # eyes: two dots on the head, facing the way it's moving
         dx, dy = self.snake[0][0] - self.snake[1][0], self.snake[0][1] - self.snake[1][1]
         cx, cy = self.snake[0][0] * TILE + TILE // 2, self.snake[0][1] * TILE + TILE // 2
-        q = TILE // 4
+        e = TILE // 4
         for side in (1, -1):
-            pygame.draw.circle(w, "black", (cx + dx * q - dy * q * side, cy + dy * q + dx * q * side), 3)
+            pygame.draw.circle(w, "black", (cx + dx * e - dy * e * side, cy + dy * e + dx * e * side), 3)
+        if plan:
+            # the "thinking" line: fades out the further ahead the AI is guessing
+            layer = pygame.Surface((size, size), pygame.SRCALPHA)
+            pts = [(c * TILE + TILE // 2, r * TILE + TILE // 2) for c, r in [self.snake[0]] + plan]
+            for i in range(1, len(pts)):
+                a = int(230 * (1 - i / len(pts))) + 25
+                pygame.draw.line(layer, (255, 255, 255, a), pts[i - 1], pts[i], 4)
+                pygame.draw.circle(layer, (255, 255, 255, a), pts[i], 5)
+            w.blit(layer, (0, 0))
+        if q is not None:
+            # Q-value of each option, written on the cell it would move into
+            small = pygame.font.Font(None, 22)
+            best = max(range(3), key=lambda i: q[i])
+            d = self.direction
+            for i, dd in enumerate((d, turn_right(d), turn_left(d))):
+                x = (self.snake[0][0] + dd[0]) * TILE + TILE // 2
+                y = (self.snake[0][1] + dd[1]) * TILE + TILE // 2
+                text = small.render(f"{q[i]:.1f}", True, "yellow" if i == best else "white", "black")
+                w.blit(text, text.get_rect(center=(x, y)))
         w.blit(self.font.render(f"Score: {self.score}", True, "white"), (10, 10))
         if self.game_over:
-            shade = pygame.Surface((SIZE, SIZE), pygame.SRCALPHA)
+            shade = pygame.Surface((size, size), pygame.SRCALPHA)
             shade.fill((0, 0, 0, 150))
             w.blit(shade, (0, 0))
             title = "YOU WIN" if self.won else "GAME OVER"
             for i, line in enumerate([title, f"Score: {self.score}", "Press Space to play again"]):
                 text = self.font.render(line, True, "white")
-                w.blit(text, text.get_rect(center=(SIZE // 2, SIZE // 2 - 40 + i * 40)))
+                w.blit(text, text.get_rect(center=(size // 2, size // 2 - 40 + i * 40)))
         pygame.display.update()
 
 

@@ -5,29 +5,32 @@ Snake in pygame, plus a Deep Q-Network (DQN) in PyTorch that learns to play it.
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 ## Commands
 
 ```bash
-python snake.py                          # play yourself (WASD / arrow keys, Space to restart)
-python evaluate.py --games 100           # random-agent check: 100 episodes, no learning
-python train.py --episodes 500           # train; saves the best checkpoint to model.pth
-python evaluate.py --model model.pth     # model vs. random baseline over 100 games, no exploration
-python evaluate.py --model model.pth --games 5 --watch   # watch the trained snake play
-python test_snake.py                     # game-logic and training checks
+python3 snake.py                          # play yourself (WASD / arrow keys, Space to restart)
+python3 evaluate.py --games 100           # random-agent check: 100 episodes, no learning
+python3 train.py --episodes 500           # train; saves the best checkpoint to model.pth
+python3 train.py --episodes 500 --render  # watch training live (slower); add --fps 30 to slow it down
+python3 evaluate.py --model model.pth     # model vs. random baseline over 100 games, no exploration
+python3 evaluate.py --model model.pth --games 5 --watch   # watch the trained snake play
+python3 evaluate.py --model model.pth --games 5 --watch --think 30   # + draw its planned path and Q-values
+python3 test_snake.py                     # game-logic and training checks
 ```
 
-`train.py --help` lists the tunable options (`--lr`, `--gamma`, `--batch-size`,
-`--epsilon-decay`, `--max-steps-without-food`, `--seed`, `--render`).
+`python3 train.py --help` lists the tunable options (`--lr`, `--gamma`, `--batch-size`,
+`--epsilon-decay`, `--max-steps-without-food`, `--cells`, `--seed`, `--render`, `--fps`).
+`--cells` sets the board size (default 20); `evaluate.py` takes it too.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `snake.py` | `SnakeGame` environment (`reset`, `step`, `get_state`, `render`) and human play |
-| `model.py` | `QNetwork`: 11 inputs, 128 hidden (ReLU), 3 outputs |
+| `model.py` | `QNetwork`: 14 inputs, 128 hidden (ReLU), 3 outputs |
 | `agent.py` | DQN agent: epsilon-greedy, replay buffer, target network, Adam, `Config` |
 | `train.py` | Training loop and logging |
 | `evaluate.py` | Random baseline, greedy model evaluation, watching a model |
@@ -37,7 +40,7 @@ python test_snake.py                     # game-logic and training checks
 
 **Actions** (relative to where the snake faces): `0` straight, `1` turn right, `2` turn left.
 
-**Observation** (11 values, each 0 or 1):
+**Observation** (14 values):
 
 - *Danger straight / right / left*: would the next cell in that direction be a wall
   or a body segment? The tail cell counts as safe, because the tail moves away on
@@ -45,10 +48,15 @@ python test_snake.py                     # game-logic and training checks
 - *Direction left / right / up / down*: one-hot of the current heading.
 - *Food left / right / up / down*: the apple's position compared to the head.
 
-The snake only sees one cell ahead. It cannot tell that turning into a closed
-pocket made by its own body will trap it several moves later, so long snakes
-eventually coil into themselves. Fixing that needs a richer observation (e.g. the
-whole grid, or flood-fill free space), which is a good next experiment.
+- *Free space straight / right / left* (0.0 to 1.0): if the head moved there, what
+  fraction of the empty board could it still reach? Computed with a flood fill
+  (breadth-first search) through empty cells. 0 means instant death; a small value
+  means the move enters a pocket that may trap the snake later.
+
+The first 11 values only look one cell ahead, so alone they can't see a pocket
+forming. The free-space values add that, but they are still a snapshot: they don't
+know the tail will keep moving and open space up later, so very long snakes still
+trap themselves. Seeing the whole grid would be the next step.
 
 **Rewards**: +10 for an apple, -10 for dying, 0 otherwise. Filling the board is a win.
 
@@ -62,7 +70,7 @@ whole grid, or flood-fill free space), which is a good next experiment.
 
 **One step of training**:
 
-1. `state = game.get_state()` — observe 11 numbers.
+1. `state = game.get_state()` — observe 14 numbers.
 2. `action = agent.act(state)` — with probability epsilon pick a random action
    (explore), otherwise the action with the highest Q-value (exploit).
 3. `next_state, reward, terminated, truncated = game.step(action)`.

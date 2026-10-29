@@ -8,11 +8,15 @@ from agent import Agent, Config
 from snake import SnakeGame
 
 
-def train(episodes, save_path, max_steps_without_food=100, render=False, seed=None, config=None, log=True):
+def train(episodes, save_path, max_steps_without_food=100, render=False, seed=None, config=None, log=True, fps=0, cells=20):
     if seed is not None:
         random.seed(seed)
         torch.manual_seed(seed)
-    game = SnakeGame(render=render, max_steps_without_food=max_steps_without_food)
+    game = SnakeGame(render=render, max_steps_without_food=max_steps_without_food, cells=cells)
+    if render:
+        import pygame
+        clock = pygame.time.Clock()
+    closed = False
     agent = Agent(config)
     recent = deque(maxlen=100)  # scores of the last 100 episodes
     best_avg = float("-inf")
@@ -30,9 +34,17 @@ def train(episodes, save_path, max_steps_without_food=100, render=False, seed=No
                 losses.append(loss)
             state = next_state
             if render:
+                pygame.display.set_caption(f"Training  episode {episode}  epsilon {agent.epsilon:.3f}")
                 game.render()
-            if terminated or truncated:
+                # Handle window events so it stays responsive; closing it stops training.
+                closed = any(e.type == pygame.QUIT for e in pygame.event.get())
+                if fps:
+                    clock.tick(fps)
+            if terminated or truncated or closed:
                 break
+        if closed:
+            print("window closed, stopping training")
+            break
 
         agent.decay_epsilon()
         recent.append(game.score)
@@ -57,6 +69,8 @@ if __name__ == "__main__":
     p.add_argument("--save", default="model.pth")
     p.add_argument("--max-steps-without-food", type=int, default=100)
     p.add_argument("--render", action="store_true", help="show the window while training (slow)")
+    p.add_argument("--fps", type=int, default=0, help="speed limit with --render (0 = as fast as possible)")
+    p.add_argument("--cells", type=int, default=20, help="board size (cells per side)")
     p.add_argument("--seed", type=int)
     p.add_argument("--lr", type=float, default=Config.lr)
     p.add_argument("--gamma", type=float, default=Config.gamma)
@@ -64,4 +78,4 @@ if __name__ == "__main__":
     p.add_argument("--epsilon-decay", type=float, default=Config.epsilon_decay)
     a = p.parse_args()
     cfg = Config(lr=a.lr, gamma=a.gamma, batch_size=a.batch_size, epsilon_decay=a.epsilon_decay)
-    train(a.episodes, a.save, a.max_steps_without_food, a.render, a.seed, cfg)
+    train(a.episodes, a.save, a.max_steps_without_food, a.render, a.seed, cfg, fps=a.fps, cells=a.cells)

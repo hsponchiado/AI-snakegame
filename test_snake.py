@@ -67,18 +67,28 @@ def test_truncation_after_steps_without_food():
 def test_state_and_actions():
     g = SnakeGame()
     g.apple = (15, 3)  # right of and above the head (10, 10)
-    assert g.get_state() == [0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0]
+    assert g.get_state() == [0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1.0, 1.0, 1.0]  # whole board reachable
     assert to_action((1, 0), (0, 1)) == RIGHT
     assert to_action((1, 0), (0, -1)) == LEFT
     assert to_action((1, 0), (-1, 0)) == STRAIGHT  # U-turn ignored
+
+
+def test_free_space_sees_pocket():
+    g = SnakeGame(cells=5)
+    # body forms a wall down column 2; head at (1,0) facing left, tail (3,4) will move away
+    g.snake = [(1, 0), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (3, 4)]
+    g.direction, g.apple = (-1, 0), (4, 0)
+    state = g.get_state()
+    # straight leads into the 9-cell left pocket out of 19 free cells; right (up) is the wall
+    assert abs(state[11] - 9 / 19) < 1e-9 and state[12] == 0.0
 
 
 def test_target_does_not_bootstrap_on_terminal():
     agent = Agent(Config(train_start=1, batch_size=1))
     for p in agent.target.parameters():
         torch.nn.init.constant_(p, 100.0)  # huge next-state Q-values
-    agent.memory.append(([0] * 11, 0, -10, [1] * 11, True))
-    q_before = agent.net(torch.zeros(11))[0].item()
+    agent.memory.append(([0] * 14, 0, -10, [1] * 14, True))
+    q_before = agent.net(torch.zeros(14))[0].item()
     loss = agent.train_step()
     assert abs(loss - (q_before + 10) ** 2) < 1e-3  # target was exactly -10, no gamma * next_q
 
@@ -89,9 +99,19 @@ def test_training_runs_and_checkpoint_loads():
     agent = train(episodes=30, save_path=path, seed=0, config=Config(train_start=64), log=False)
     assert agent.updates > 0 and agent.epsilon < 1.0
     loaded = Agent.load(path)
-    s = [0] * 11
+    s = [0] * 14
     assert loaded.act(s, explore=False) in (0, 1, 2)
     assert len(loaded.memory) == 0
+
+
+def test_think_does_not_touch_real_game():
+    from evaluate import think
+    random.seed(1)
+    game = SnakeGame()
+    snake, apple, rng = list(game.snake), game.apple, random.getstate()
+    plan, q = think(Agent(), game, 20)
+    assert game.snake == snake and game.apple == apple and random.getstate() == rng
+    assert len(q) == 3 and len(plan) <= 20
 
 
 if __name__ == "__main__":

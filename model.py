@@ -9,7 +9,7 @@ class QNetwork(nn.Module):
     probabilities: they can be negative, don't sum to 1, and we just pick the largest.
     """
 
-    def __init__(self, inputs=11, hidden=128, outputs=3):
+    def __init__(self, inputs=14, hidden=128, outputs=3):
         super().__init__()
         self.layers = nn.Sequential(
             nn.Linear(inputs, hidden),
